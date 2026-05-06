@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>onofa · 02</title>
+<link rel="icon" href="data:," />
+<style>
+  :root { --bg:#0e0e0e; --ink:#e8e4dc; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; overflow:hidden; background:var(--bg); cursor:grab; touch-action:none; }
+  body.grabbing { cursor:grabbing; }
+  canvas { display:block; }
+
+  .label {
+    position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+    font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+    font-size:10px; letter-spacing:0.4em; color:var(--ink); opacity:0.35;
+    z-index:5; user-select:none; pointer-events:none;
+  }
+  .marks { position:fixed; inset:0; pointer-events:none; z-index:3; color:var(--ink); }
+  .marks span {
+    position:absolute; width:10px; height:10px;
+    border:1px solid currentColor; opacity:0.25;
+  }
+  .tl { top:24px; left:24px; border-right:none; border-bottom:none; }
+  .tr { top:24px; right:24px; border-left:none; border-bottom:none; }
+  .bl { bottom:24px; left:24px; border-right:none; border-top:none; }
+  .br { bottom:24px; right:24px; border-left:none; border-top:none; }
+
+  .perm {
+    position:fixed; top:20px; right:20px; z-index:6;
+    font-family: ui-monospace, Menlo, monospace; font-size:10px;
+    letter-spacing:0.2em; padding:8px 12px;
+    background:transparent; border:1px solid var(--ink); color:var(--ink);
+    cursor:pointer; opacity:0; transition:opacity 0.4s;
+  }
+  .perm.show { opacity:0.6; }
+  .perm:hover { opacity:1; }
+</style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div class="marks">
+    <span class="tl"></span><span class="tr"></span>
+    <span class="bl"></span><span class="br"></span>
+  </div>
+  <div class="label">02 · OBJECT</div>
+  <button class="perm" id="perm">ENABLE TILT</button>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let W, H, DPR;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.style.width = W+'px'; canvas.style.height = H+'px';
+    canvas.width = W*DPR; canvas.height = H*DPR;
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+  }
+  window.addEventListener('resize', resize); resize();
+
+  // ----- a "stretched octahedron" — single, ambiguous, machined-looking form
+  // 6 vertices: top, bottom, and a 4-vertex equator
+  const verts = [
+    [ 0,  -1.4,  0],   // 0 top
+    [ 0,   1.4,  0],   // 1 bottom
+    [ 1,   0,    0],   // 2
+    [ 0,   0,    1],   // 3
+    [-1,   0,    0],   // 4
+    [ 0,   0,   -1],   // 5
+  ];
+  const edges = [
+    [0,2],[0,3],[0,4],[0,5],
+    [1,2],[1,3],[1,4],[1,5],
+    [2,3],[3,4],[4,5],[5,2],
+    // a diagonal scar inside, gives the form character
+    [0,1],
+  ];
+
+  // camera state
+  const cam = {
+    yaw: 0.6, pitch: -0.25,
+    targetYaw: 0.6, targetPitch: -0.25,
+    velYaw: 0.0015, velPitch: 0,
+    drag: false, lastX:0, lastY:0,
+    tiltYaw: 0, tiltPitch: 0,
+  };
+
+  canvas.addEventListener('pointerdown', e => {
+    cam.drag = true; document.body.classList.add('grabbing');
+    cam.lastX = e.clientX; cam.lastY = e.clientY;
+    cam.velYaw = cam.velPitch = 0;
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!cam.drag) return;
+    const dx = e.clientX - cam.lastX, dy = e.clientY - cam.lastY;
+    cam.lastX = e.clientX; cam.lastY = e.clientY;
+    cam.targetYaw   += dx * 0.006;
+    cam.targetPitch += dy * 0.006;
+    cam.targetPitch = Math.max(-1.3, Math.min(1.3, cam.targetPitch));
+    cam.velYaw = dx * 0.006;
+    cam.velPitch = dy * 0.006;
+  });
+  function endDrag(){ cam.drag=false; document.body.classList.remove('grabbing'); }
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+
+  // tilt (phone)
+  const permBtn = document.getElementById('perm');
+  function onTilt(e) {
+    const g = (e.gamma || 0) / 90;   // -1..1
+    const b = ((e.beta || 0) - 30) / 90; // offset so neutral hold ≈ 0
+    cam.tiltYaw   = g * 0.6;
+    cam.tiltPitch = -b * 0.6;
+  }
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    permBtn.classList.add('show');
+    permBtn.addEventListener('click', async () => {
+      try {
+        const r = await DeviceOrientationEvent.requestPermission();
+        if (r === 'granted') {
+          window.addEventListener('deviceorientation', onTilt);
+          permBtn.classList.remove('show');
+        }
+      } catch(_) {}
+    });
+  } else if ('DeviceOrientationEvent' in window) {
+    window.addEventListener('deviceorientation', onTilt);
+  }
+
+  function project(v, yaw, pitch) {
+    // rotate around Y (yaw)
+    let [x,y,z] = v;
+    let cy = Math.cos(yaw), sy = Math.sin(yaw);
+    let x1 = x*cy + z*sy;
+    let z1 = -x*sy + z*cy;
+    // rotate around X (pitch)
+    let cp = Math.cos(pitch), sp = Math.sin(pitch);
+    let y1 = y*cp - z1*sp;
+    let z2 = y*sp + z1*cp;
+    // perspective
+    const scale = Math.min(W,H) * 0.22;
+    const f = 4 / (4 + z2);
+    return [W/2 + x1 * scale * f, H/2 + y1 * scale * f, z2];
+  }
+
+  function step() {
+    if (!cam.drag) {
+      // idle drift + decay of fling
+      cam.targetYaw += cam.velYaw + 0.0015;
+      cam.targetPitch += cam.velPitch;
+      cam.targetPitch = Math.max(-1.3, Math.min(1.3, cam.targetPitch));
+      cam.velYaw *= 0.94; cam.velPitch *= 0.94;
+    }
+    cam.yaw   += (cam.targetYaw + cam.tiltYaw - cam.yaw) * 0.12;
+    cam.pitch += (cam.targetPitch + cam.tiltPitch - cam.pitch) * 0.12;
+
+    ctx.clearRect(0,0,W,H);
+
+    // project all verts
+    const p = verts.map(v => project(v, cam.yaw, cam.pitch));
+
+    // sort edges back-to-front by midpoint depth, fade by depth
+    const edgeData = edges.map(([a,b]) => {
+      const za = p[a][2], zb = p[b][2];
+      return { a, b, depth: (za+zb)/2 };
+    }).sort((a,b)=> a.depth - b.depth);
+
+    // depth range for fade
+    let minZ = Infinity, maxZ = -Infinity;
+    p.forEach(v => { if(v[2]<minZ) minZ=v[2]; if(v[2]>maxZ) maxZ=v[2]; });
+    const range = Math.max(0.0001, maxZ - minZ);
+
+    edgeData.forEach(({a,b}) => {
+      const d = (((p[a][2]+p[b][2])/2) - minZ) / range; // 0 near, 1 far
+      const alpha = 1 - d * 0.75;
+      ctx.strokeStyle = `rgba(232, 228, 220, ${alpha})`;
+      ctx.lineWidth = 1.0 + (1 - d) * 0.4;
+      ctx.beginPath();
+      ctx.moveTo(p[a][0], p[a][1]);
+      ctx.lineTo(p[b][0], p[b][1]);
+      ctx.stroke();
+    });
+
+    // vertices as small filled dots
+    p.forEach(v => {
+      const d = (v[2] - minZ) / range;
+      const alpha = 1 - d * 0.75;
+      ctx.fillStyle = `rgba(232, 228, 220, ${alpha})`;
+      ctx.beginPath();
+      ctx.arc(v[0], v[1], 2.4 - d*0.8, 0, Math.PI*2);
+      ctx.fill();
+    });
+
+    requestAnimationFrame(step);
+  }
+  step();
+})();
+</script>
+</body>
+</html>
